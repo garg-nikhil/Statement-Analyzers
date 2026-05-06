@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useCallback, ChangeEvent, useEffect, useRef } from 'react';
+import React, { useState, useCallback, ChangeEvent, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Upload, 
@@ -21,6 +21,7 @@ import {
   Trash2,
   Calendar,
   BarChart3,
+  Edit,
   PieChart as PieChartIcon
 } from 'lucide-react';
 import { 
@@ -45,6 +46,37 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [processingIndex, setProcessingIndex] = useState(0);
   const [activeReportId, setActiveReportId] = useState<string | null>(null);
+  const [selectedVendorSummary, setSelectedVendorSummary] = useState<VendorSummary | null>(null);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
+  const [categories, setCategories] = useState<string[]>(() => {
+    const saved = localStorage.getItem('spendwise_categories');
+    return saved ? JSON.parse(saved) : ['Fashion', 'Marketplace', 'Other'];
+  });
+
+  const [categoryMapping, setCategoryMapping] = useState<Record<string, string>>(() => {
+    const saved = localStorage.getItem('spendwise_category_mapping');
+    return saved ? JSON.parse(saved) : {
+      'H&M': 'Fashion',
+      'Zara': 'Fashion',
+      'Myntra': 'Fashion',
+      'Ajio': 'Fashion',
+      'Nykaa': 'Fashion',
+      'Reliance Trends': 'Fashion',
+      'Max Fashion': 'Fashion',
+      'Pantaloons': 'Fashion',
+      'Meesho': 'Fashion',
+      'Amazon': 'Marketplace',
+      'Flipkart': 'Marketplace',
+      'Tata CLiQ': 'Marketplace',
+      'Other Marketplace': 'Other'
+    };
+  });
+
+  const [budgets, setBudgets] = useState<Record<string, number>>(() => {
+    const saved = localStorage.getItem('spendwise_budgets');
+    return saved ? JSON.parse(saved) : { 'Fashion': 3000, 'Marketplace': 5000, 'Other': 1000 };
+  });
   const abortControllerRef = useRef<boolean>(false);
   
   // History State
@@ -73,8 +105,57 @@ export default function App() {
     localStorage.setItem('spendwise_history', JSON.stringify(reports));
   };
 
+  const updateBudget = (category: string, amount: number) => {
+    const newBudgets = { ...budgets, [category]: amount };
+    setBudgets(newBudgets);
+    localStorage.setItem('spendwise_budgets', JSON.stringify(newBudgets));
+  };
+
+  const updateCategoryMapping = (vendor: string, category: string) => {
+    const newMapping = { ...categoryMapping, [vendor]: category };
+    setCategoryMapping(newMapping);
+    localStorage.setItem('spendwise_category_mapping', JSON.stringify(newMapping));
+  };
+
+  const manageCategories = (action: 'add' | 'remove' | 'rename', name: string, newName?: string) => {
+    let nextCategories = [...categories];
+    let nextBudgets = { ...budgets };
+    let nextMapping = { ...categoryMapping };
+
+    if (action === 'add') {
+      if (!nextCategories.includes(name)) {
+        nextCategories.push(name);
+        nextBudgets[name] = 1000;
+      }
+    } else if (action === 'remove') {
+      nextCategories = nextCategories.filter(c => c !== name);
+      delete nextBudgets[name];
+      // Re-map vendors using this category to 'Other' if it exists, or first category
+      const fallback = nextCategories[0] || 'Other';
+      Object.keys(nextMapping).forEach(vendor => {
+        if (nextMapping[vendor] === name) nextMapping[vendor] = fallback;
+      });
+    } else if (action === 'rename' && newName) {
+      nextCategories = nextCategories.map(c => c === name ? newName : c);
+      nextBudgets[newName] = nextBudgets[name];
+      delete nextBudgets[name];
+      Object.keys(nextMapping).forEach(vendor => {
+        if (nextMapping[vendor] === name) nextMapping[vendor] = newName;
+      });
+    }
+
+    setCategories(nextCategories);
+    setBudgets(nextBudgets);
+    setCategoryMapping(nextMapping);
+    localStorage.setItem('spendwise_categories', JSON.stringify(nextCategories));
+    localStorage.setItem('spendwise_budgets', JSON.stringify(nextBudgets));
+    localStorage.setItem('spendwise_category_mapping', JSON.stringify(nextMapping));
+  };
+
+  const VENDORS = ['H&M', 'Zara', 'Amazon', 'Flipkart', 'Myntra', 'Ajio', 'Nykaa', 'Meesho', 'Tata CLiQ', 'Reliance Trends', 'Max Fashion', 'Pantaloons', 'Other Marketplace'];
+
   const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
-    const selectedFiles = Array.from(e.target.files || []);
+    const selectedFiles = Array.from(e.target.files || []) as File[];
     const validFiles = selectedFiles.filter(f => f.type.startsWith('image/'));
     
     if (validFiles.length === 0 && selectedFiles.length > 0) {
@@ -141,7 +222,13 @@ export default function App() {
         
         if (abortControllerRef.current) return;
         
-        aggregatedTransactions.push(...result.transactions);
+        // Ensure each transaction has a unique ID for editing
+        const txsWithIds = result.transactions.map((tx: any) => ({
+          ...tx,
+          id: tx.id || crypto.randomUUID()
+        }));
+        
+        aggregatedTransactions.push(...txsWithIds);
       }
 
       if (abortControllerRef.current) return;
@@ -149,7 +236,6 @@ export default function App() {
       setStatus('finalizing');
       
       // Re-calculate aggregations for the combined set
-      const VENDORS = ['H&M', 'Zara', 'Amazon', 'Flipkart', 'Myntra', 'Ajio'];
       const summariesMap: Record<string, any> = {};
       VENDORS.forEach(v => {
         summariesMap[v] = {
@@ -162,7 +248,7 @@ export default function App() {
       });
 
       aggregatedTransactions.forEach((tx: any) => {
-        const v = VENDORS.find(vendor => tx.vendor.toLowerCase().includes(vendor.toLowerCase())) || tx.vendor;
+        const v = VENDORS.find(vendor => tx.vendor.toLowerCase().includes(vendor.toLowerCase())) || 'Other Marketplace';
         if (summariesMap[v]) {
           if (tx.type === TransactionType.DEBIT) {
             summariesMap[v].debits.push(tx);
@@ -240,6 +326,67 @@ export default function App() {
     updateHistory(savedReports.filter(r => r.id !== id));
   };
 
+  const updateTransactionVendor = (txId: string, newVendor: string) => {
+    if (!results) return;
+
+    const updatedTransactions = results.transactions.map(tx => 
+      tx.id === txId ? { ...tx, vendor: newVendor } : tx
+    );
+
+    // Re-calculate aggregations
+    const summariesMap: Record<string, any> = {};
+    VENDORS.forEach(v => {
+      summariesMap[v] = {
+        vendor: v,
+        debits: [],
+        credits: [],
+        totalDebit: 0,
+        totalCredit: 0
+      };
+    });
+
+    updatedTransactions.forEach((tx: any) => {
+      const v = VENDORS.find(vendor => tx.vendor.toLowerCase().includes(vendor.toLowerCase())) || 'Other Marketplace';
+      if (summariesMap[v]) {
+        if (tx.type === TransactionType.DEBIT) {
+          summariesMap[v].debits.push(tx);
+          summariesMap[v].totalDebit += tx.amount;
+        } else {
+          summariesMap[v].credits.push(tx);
+          summariesMap[v].totalCredit += tx.amount;
+        }
+      }
+    });
+
+    const vendorSummaries = Object.values(summariesMap).filter(s => s.debits.length > 0 || s.credits.length > 0);
+    
+    setResults({
+      transactions: updatedTransactions,
+      vendorSummaries: vendorSummaries as any
+    });
+  };
+
+  const updateTransactionNotes = (txId: string, notes: string) => {
+    if (!results) return;
+
+    const updatedTransactions = results.transactions.map(tx => 
+      tx.id === txId ? { ...tx, notes } : tx
+    );
+
+    // We need to keep indices and summaries in sync, though notes don't affect totals
+    // Update transactions in the vendorSummaries structure
+    const updatedVendorSummaries = results.vendorSummaries.map(summary => ({
+      ...summary,
+      debits: summary.debits.map(tx => tx.id === txId ? { ...tx, notes } : tx),
+      credits: summary.credits.map(tx => tx.id === txId ? { ...tx, notes } : tx)
+    }));
+
+    setResults({
+      transactions: updatedTransactions,
+      vendorSummaries: updatedVendorSummaries
+    });
+  };
+
   const parseDate = (dateStr: string) => {
     // Try common formats DD/MM/YYYY or MM/DD/YYYY or YYYY-MM-DD
     const parts = dateStr.split(/[/.-]/);
@@ -271,7 +418,6 @@ export default function App() {
     }
 
     // Re-calculate summaries for the filtered subset
-    const VENDORS = ['H&M', 'Zara', 'Amazon', 'Flipkart', 'Myntra', 'Ajio'];
     const summariesMap: Record<string, any> = {};
     VENDORS.forEach(v => {
       summariesMap[v] = {
@@ -284,7 +430,7 @@ export default function App() {
     });
 
     filteredTxs.forEach((tx) => {
-      const v = VENDORS.find(vendor => tx.vendor.toLowerCase().includes(vendor.toLowerCase())) || tx.vendor;
+      const v = VENDORS.find(vendor => tx.vendor.toLowerCase().includes(vendor.toLowerCase())) || 'Other Marketplace';
       if (summariesMap[v]) {
         if (tx.type === TransactionType.DEBIT) {
           summariesMap[v].debits.push(tx);
@@ -298,9 +444,17 @@ export default function App() {
 
     const vendorSummaries = Object.values(summariesMap).filter(s => s.debits.length > 0 || s.credits.length > 0);
 
+    // Calculate category summaries for budget tracking
+    const categoryStats: Record<string, number> = {};
+    Object.values(summariesMap).forEach((s: any) => {
+      const cat = categoryMapping[s.vendor] || 'Other';
+      categoryStats[cat] = (categoryStats[cat] || 0) + s.totalDebit;
+    });
+
     return {
       transactions: filteredTxs,
-      vendorSummaries: vendorSummaries as any
+      vendorSummaries: vendorSummaries as any,
+      categoryStats
     };
   })();
 
@@ -343,19 +497,74 @@ export default function App() {
             </div>
           </section>
 
-          <section className="flex-1">
+          <section className="flex-shrink-0">
             <h2 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">Target Vendors</h2>
-            <div className="space-y-2">
-              {['Amazon', 'Zara', 'Flipkart', 'Myntra', 'Ajio', 'H&M'].map(v => (
-                <div key={v} className="flex justify-between items-center text-sm py-1 border-b border-slate-100">
-                  <span className="text-slate-600 font-medium">{v}</span>
+            <div className="space-y-1 max-h-48 overflow-y-auto pr-1">
+              {VENDORS.map(v => (
+                <div key={v} className="flex justify-between items-center text-[11px] py-1 border-b border-slate-50">
+                  <span className="text-slate-600 font-medium truncate max-w-[120px]">{v}</span>
                   {results && (
-                    <span className="text-slate-400 text-[10px] font-bold">
+                    <span className="text-blue-500 font-bold">
                       {results.vendorSummaries.find(s => s.vendor === v) ? '✓' : ''}
                     </span>
                   )}
                 </div>
               ))}
+            </div>
+          </section>
+
+          {/* Budgeting Section */}
+          <section className="mt-4 pt-6 border-t border-slate-100">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                Monthly Budgets
+              </h2>
+              <button 
+                onClick={() => setIsSettingsOpen(true)}
+                className="p-1 hover:bg-slate-100 rounded text-blue-500 transition-colors"
+                title="Manage Categories"
+              >
+                <Edit className="w-3 h-3" />
+              </button>
+            </div>
+            <div className="space-y-4">
+              {categories.map(cat => {
+                const spent = filteredResults?.categoryStats[cat] || 0;
+                const budget = budgets[cat] || 0;
+                const percent = budget > 0 ? Math.min((spent / budget) * 100, 100) : 0;
+                
+                return (
+                  <div key={cat} className="space-y-1.5 group">
+                    <div className="flex justify-between items-center text-[9px] uppercase font-bold tracking-tighter">
+                      <span className="text-slate-400">{cat}</span>
+                      <div className="flex items-center gap-2">
+                        <span className={spent > budget ? 'text-red-500' : 'text-slate-600'}>
+                          ₹{spent.toFixed(0)} / ₹{budget}
+                        </span>
+                        <button 
+                          onClick={() => {
+                            const val = prompt(`New budget for ${cat}:`, String(budget));
+                            if (val && !isNaN(Number(val))) updateBudget(cat, Number(val));
+                          }}
+                          className="opacity-0 group-hover:opacity-100 p-0.5 hover:bg-slate-100 rounded transition-opacity"
+                        >
+                          <Edit className="w-2.5 h-2.5 text-blue-500" />
+                        </button>
+                      </div>
+                    </div>
+                    <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                      <motion.div 
+                        initial={{ width: 0 }}
+                        animate={{ width: `${percent}%` }}
+                        className={`h-full transition-colors duration-500 ${
+                          percent >= 100 ? 'bg-red-500' : 
+                          percent >= 75 ? 'bg-amber-500' : 'bg-blue-500'
+                        }`}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </section>
 
@@ -644,10 +853,52 @@ export default function App() {
                           cursor={{ fill: '#f8fafc' }}
                           content={({ active, payload }) => {
                             if (active && payload && payload.length) {
+                              const vendor = payload[0].payload.name;
+                              const category = categoryMapping[vendor] || 'Other';
+                              const budget = budgets[category] || 0;
+                              const spent = filteredResults?.categoryStats[category] || 0;
+                              const isOver = budget > 0 && spent > budget;
+                              
                               return (
-                                <div className="bg-slate-900 text-white p-2 text-xs rounded-lg shadow-xl border border-slate-800">
-                                  <p className="font-bold mb-1">{payload[0].payload.name}</p>
-                                  <p className="text-blue-400 italic">₹{payload[0].value.toLocaleString()}</p>
+                                <div className="bg-slate-900 text-white p-4 text-xs rounded-xl shadow-2xl border border-slate-800 min-w-[160px]">
+                                  <div className="flex justify-between items-start mb-3">
+                                    <div>
+                                      <p className="font-bold text-sm">{vendor}</p>
+                                      <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">{category}</p>
+                                    </div>
+                                    {isOver && (
+                                      <div className="bg-red-500/20 text-red-400 p-1 rounded-md">
+                                        <AlertCircle className="w-3.5 h-3.5" />
+                                      </div>
+                                    )}
+                                  </div>
+                                  
+                                  <div className="space-y-2">
+                                    <div className="flex justify-between">
+                                      <span className="text-slate-400">Vendor Spent:</span>
+                                      <span className="font-bold">₹{payload[0].value.toLocaleString()}</span>
+                                    </div>
+                                    <div className="pt-2 border-t border-slate-800">
+                                      <div className="flex justify-between mb-1">
+                                        <span className="text-slate-400">Category Budget:</span>
+                                        <span className="font-bold">₹{budget.toLocaleString()}</span>
+                                      </div>
+                                      <div className="flex justify-between">
+                                        <span className="text-slate-400">Total Spent:</span>
+                                        <span className={`font-bold ${isOver ? 'text-red-400' : 'text-emerald-400'}`}>
+                                          ₹{spent.toLocaleString()}
+                                        </span>
+                                      </div>
+                                    </div>
+                                    {budget > 0 && (
+                                      <div className="mt-2 h-1 bg-slate-800 rounded-full overflow-hidden">
+                                        <div 
+                                          className={`h-full ${isOver ? 'bg-red-500' : 'bg-blue-500'}`} 
+                                          style={{ width: `${Math.min((spent / budget) * 100, 100)}%` }}
+                                        />
+                                      </div>
+                                    )}
+                                  </div>
                                 </div>
                               );
                             }
@@ -659,19 +910,28 @@ export default function App() {
                           radius={[6, 6, 0, 0]}
                           barSize={40}
                         >
-                          {filteredResults.vendorSummaries.map((entry, index) => (
-                            <Cell 
-                              key={`cell-${index}`} 
-                              fill={[
-                                '#3b82f6', // Blue
-                                '#8b5cf6', // Violet
-                                '#ec4899', // Pink
-                                '#f59e0b', // Amber
-                                '#10b981', // Emerald
-                                '#6366f1'  // Indigo
-                              ][index % 6]} 
-                            />
-                          ))}
+                          {filteredResults.vendorSummaries.map((entry, index) => {
+                            const category = categoryMapping[entry.vendor] || 'Other';
+                            const budget = budgets[category] || 0;
+                            const spent = filteredResults?.categoryStats[category] || 0;
+                            const isOver = budget > 0 && spent > budget;
+                            
+                            return (
+                              <Cell 
+                                key={`cell-${index}`} 
+                                fill={isOver ? '#ef4444' : [
+                                  '#3b82f6', // Blue
+                                  '#8b5cf6', // Violet
+                                  '#ec4899', // Pink
+                                  '#f59e0b', // Amber
+                                  '#10b981', // Emerald
+                                  '#6366f1'  // Indigo
+                                ][index % 6]} 
+                                stroke={isOver ? '#fca5a5' : 'none'}
+                                strokeWidth={isOver ? 2 : 0}
+                              />
+                            );
+                          })}
                         </Bar>
                       </BarChart>
                     </ResponsiveContainer>
@@ -691,13 +951,64 @@ export default function App() {
                 </div>
               ) : (
                 <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-                  {filteredResults?.vendorSummaries.map((summary) => (
-                    <VendorCard key={summary.vendor} summary={summary} />
+                  {filteredResults?.vendorSummaries.map((summary: VendorSummary) => (
+                    <VendorCard 
+                      key={summary.vendor} 
+                      summary={summary} 
+                      onUpdateVendor={updateTransactionVendor}
+                      vendorList={VENDORS}
+                      onViewDetails={() => setSelectedVendorSummary(summary)}
+                    />
                   ))}
                 </div>
               )}
             </motion.div>
           )}
+
+          <AnimatePresence>
+            {isSettingsOpen && (
+              <BudgetSettingsModal 
+                categories={categories}
+                onManageCategories={manageCategories}
+                vendorMapping={categoryMapping}
+                onUpdateMapping={updateCategoryMapping}
+                vendors={VENDORS}
+                onClose={() => setIsSettingsOpen(false)}
+              />
+            )}
+            {selectedVendorSummary && (
+              <VendorDetailsModal 
+                summary={selectedVendorSummary}
+                vendorList={VENDORS}
+                onClose={() => setSelectedVendorSummary(null)}
+                onUpdateVendor={(txId, newVendor) => {
+                  updateTransactionVendor(txId, newVendor);
+                  // Update the local modal summary as well
+                  const updatedTxs = [...selectedVendorSummary.debits, ...selectedVendorSummary.credits].map(tx => 
+                    tx.id === txId ? { ...tx, vendor: newVendor } : tx
+                  );
+                  // We need to re-find the summary since setResults is async and might not be ready
+                  // better to just update what's in the modal state
+                  setSelectedVendorSummary({
+                    ...selectedVendorSummary,
+                    debits: updatedTxs.filter(tx => tx.type === TransactionType.DEBIT),
+                    credits: updatedTxs.filter(tx => tx.type === TransactionType.CREDIT)
+                  });
+                }}
+                onUpdateNotes={(txId, notes) => {
+                  updateTransactionNotes(txId, notes);
+                  const updatedTxs = [...selectedVendorSummary.debits, ...selectedVendorSummary.credits].map(tx => 
+                    tx.id === txId ? { ...tx, notes } : tx
+                  );
+                  setSelectedVendorSummary({
+                    ...selectedVendorSummary,
+                    debits: updatedTxs.filter(tx => tx.type === TransactionType.DEBIT),
+                    credits: updatedTxs.filter(tx => tx.type === TransactionType.CREDIT)
+                  });
+                }}
+              />
+            )}
+          </AnimatePresence>
 
           {error && (
             <div className="mt-4 bg-red-50 text-red-700 p-4 rounded-xl flex items-center gap-3 border border-red-100">
@@ -711,13 +1022,24 @@ export default function App() {
   );
 }
 
-function VendorCard({ summary }: { summary: VendorSummary }) {
-  const [isOpen, setIsOpen] = useState(false);
+interface VendorCardProps {
+  summary: VendorSummary;
+  onUpdateVendor: (txId: string, newVendor: string) => void;
+  vendorList: string[];
+  onViewDetails: () => void;
+}
 
+const VendorCard: React.FC<VendorCardProps> = ({ 
+  summary, 
+  onUpdateVendor,
+  vendorList,
+  onViewDetails
+}) => {
   return (
     <motion.div 
       layout
-      className="bg-white border border-slate-200 rounded-xl flex flex-col shadow-sm overflow-hidden h-fit"
+      className="bg-white border border-slate-200 rounded-xl flex flex-col shadow-sm overflow-hidden h-fit group transition-all hover:border-blue-300 hover:shadow-md cursor-pointer"
+      onClick={onViewDetails}
     >
       <div className="p-5">
         <div className="flex justify-between items-center mb-4">
@@ -739,42 +1061,414 @@ function VendorCard({ summary }: { summary: VendorSummary }) {
         </div>
 
         <button 
-          onClick={() => setIsOpen(!isOpen)}
-          className="w-full py-2 bg-slate-50 hover:bg-slate-100 rounded text-[10px] font-bold uppercase tracking-widest text-slate-500 transition-colors"
+          className="w-full py-2 bg-slate-50 group-hover:bg-blue-50 rounded text-[10px] font-bold uppercase tracking-widest text-slate-500 group-hover:text-blue-600 transition-colors"
         >
-          {isOpen ? 'Close History' : 'View Transactions'}
+          View & Categorize
         </button>
       </div>
+    </motion.div>
+  );
+}
 
-      <AnimatePresence>
-        {isOpen && (
-          <motion.div 
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            className="border-t border-slate-100 bg-slate-50/30 overflow-hidden"
+function BudgetSettingsModal({
+  categories,
+  onManageCategories,
+  vendorMapping,
+  onUpdateMapping,
+  vendors,
+  onClose
+}: {
+  categories: string[],
+  onManageCategories: (action: 'add' | 'remove' | 'rename', name: string, newName?: string) => void,
+  vendorMapping: Record<string, string>,
+  onUpdateMapping: (vendor: string, category: string) => void,
+  vendors: string[],
+  onClose: () => void
+}) {
+  const [newCategoryName, setNewCategoryName] = useState('');
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[110] flex items-center justify-center p-4 md:p-8 bg-slate-900/60 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ scale: 0.95, y: 20 }}
+        animate={{ scale: 1, y: 0 }}
+        exit={{ scale: 0.95, y: 20 }}
+        className="bg-white rounded-2xl w-full max-w-3xl max-h-[90vh] overflow-hidden shadow-2xl flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="p-6 border-b border-slate-100 flex items-center justify-between">
+          <div>
+            <h2 className="text-2xl font-bold text-slate-900">Budget Settings</h2>
+            <p className="text-xs text-slate-500 font-bold uppercase tracking-widest mt-1">Manage Categories & Mappings</p>
+          </div>
+          <button 
+            onClick={onClose}
+            className="p-2 hover:bg-slate-100 rounded-full text-slate-400 hover:text-slate-900 transition-colors"
           >
-            <div className="p-5 space-y-4">
-              <div className="space-y-2">
-                <div className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Live Activity</div>
-                <div className="space-y-1">
-                  {[...summary.debits, ...summary.credits].map((tx, i) => (
-                    <div key={i} className="flex justify-between items-center text-xs py-1">
-                      <div className="flex flex-col">
-                        <span className="text-slate-700 font-medium truncate max-w-[120px]">{tx.description}</span>
-                        <span className="text-[9px] text-slate-400 uppercase">{tx.date}</span>
-                      </div>
-                      <span className={`font-bold ${tx.type === TransactionType.CREDIT ? 'text-emerald-600' : 'text-slate-900'}`}>
-                        {tx.type === TransactionType.CREDIT ? '+' : ''}₹{tx.amount.toFixed(2)}
-                      </span>
+            <X className="w-6 h-6" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto grid md:grid-cols-2">
+          {/* Left: Category Management */}
+          <div className="p-6 border-r border-slate-100 space-y-6">
+            <section>
+              <h3 className="text-xs font-black uppercase text-slate-400 tracking-widest mb-4">Categories</h3>
+              <div className="space-y-2 mb-4">
+                {categories.map(cat => (
+                  <div key={cat} className="flex items-center justify-between p-3 bg-slate-50 rounded-lg group">
+                    <span className="text-sm font-bold text-slate-700">{cat}</span>
+                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button 
+                        onClick={() => {
+                          const newName = prompt(`Rename ${cat} to:`, cat);
+                          if (newName && newName !== cat) onManageCategories('rename', cat, newName);
+                        }}
+                        className="p-1.5 hover:bg-white rounded text-blue-500 shadow-sm transition-all"
+                      >
+                        <Edit className="w-3.5 h-3.5" />
+                      </button>
+                      {categories.length > 1 && (
+                        <button 
+                          onClick={() => {
+                            if (window.confirm(`Delete category "${cat}"? Vendors will be re-assigned.`)) {
+                              onManageCategories('remove', cat);
+                            }
+                          }}
+                          className="p-1.5 hover:bg-white rounded text-red-400 shadow-sm transition-all"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                     </div>
-                  ))}
+                  </div>
+                ))}
+              </div>
+              
+              <div className="flex gap-2">
+                <input 
+                  type="text" 
+                  placeholder="New Category..."
+                  value={newCategoryName}
+                  onChange={(e) => setNewCategoryName(e.target.value)}
+                  className="flex-1 text-xs px-3 py-2 border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                />
+                <button 
+                  onClick={() => {
+                    if (newCategoryName.trim()) {
+                      onManageCategories('add', newCategoryName.trim());
+                      setNewCategoryName('');
+                    }
+                  }}
+                  className="px-4 py-2 bg-slate-900 text-white text-xs font-bold rounded-lg hover:bg-slate-800 transition-colors"
+                >
+                  Add
+                </button>
+              </div>
+            </section>
+          </div>
+
+          {/* Right: Vendor Mapping */}
+          <div className="p-6 bg-slate-50/30 overflow-y-auto">
+            <h3 className="text-xs font-black uppercase text-slate-400 tracking-widest mb-4">Vendor Mapping</h3>
+            <div className="space-y-2">
+              {vendors.map(vendor => (
+                <div key={vendor} className="flex items-center justify-between p-2 bg-white border border-slate-100 rounded-lg shadow-sm">
+                  <span className="text-[11px] font-bold text-slate-600 truncate max-w-[120px]">{vendor}</span>
+                  <select 
+                    value={vendorMapping[vendor] || categories[0]}
+                    onChange={(e) => onUpdateMapping(vendor, e.target.value)}
+                    className="text-[10px] p-1.5 border border-slate-200 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/10 w-28"
+                  >
+                    {categories.map(cat => (
+                      <option key={cat} value={cat}>{cat}</option>
+                    ))}
+                  </select>
                 </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="p-6 border-t border-slate-100 bg-slate-50 flex justify-end">
+          <button 
+            onClick={onClose}
+            className="px-6 py-2 bg-slate-900 text-white font-bold rounded-lg hover:bg-slate-800 transition-colors"
+          >
+            Done
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+function VendorDetailsModal({
+  summary,
+  vendorList,
+  onClose,
+  onUpdateVendor,
+  onUpdateNotes
+}: {
+  summary: VendorSummary,
+  vendorList: string[],
+  onClose: () => void,
+  onUpdateVendor: (txId: string, newVendor: string) => void,
+  onUpdateNotes: (txId: string, notes: string) => void
+}) {
+  const [editingTxId, setEditingTxId] = useState<string | null>(null);
+  const [editingNotesId, setEditingNotesId] = useState<string | null>(null);
+  const [noteValue, setNoteValue] = useState('');
+  const [modalStartDate, setModalStartDate] = useState('');
+  const [modalEndDate, setModalEndDate] = useState('');
+  const [minAmount, setMinAmount] = useState<number>(0);
+  const [maxAmount, setMaxAmount] = useState<number>(() => {
+    const allTxs = [...summary.debits, ...summary.credits];
+    return allTxs.length > 0 ? Math.max(...allTxs.map(t => t.amount)) : 10000;
+  });
+
+  const parseModalDate = (dateStr: string) => {
+    const parts = dateStr.split(/[/.-]/);
+    if (parts.length === 3) {
+      if (parts[0].length <= 2 && parts[2].length === 4) {
+        return new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
+      }
+      if (parts[0].length === 4) return new Date(dateStr);
+    }
+    return new Date(dateStr);
+  };
+
+  const filteredTransactions = useMemo(() => {
+    return [...summary.debits, ...summary.credits].filter(tx => {
+      const amountMatch = tx.amount >= minAmount && tx.amount <= maxAmount;
+      
+      let dateMatch = true;
+      const txDate = parseModalDate(tx.date);
+      if (modalStartDate) {
+        dateMatch = dateMatch && txDate >= new Date(modalStartDate);
+      }
+      if (modalEndDate) {
+        dateMatch = dateMatch && txDate <= new Date(modalEndDate);
+      }
+      
+      return amountMatch && dateMatch;
+    }).sort((a, b) => parseModalDate(b.date).getTime() - parseModalDate(a.date).getTime());
+  }, [summary, modalStartDate, modalEndDate, minAmount, maxAmount]);
+
+  const filteredStats = useMemo(() => {
+    return {
+      debit: filteredTransactions.filter(t => t.type === TransactionType.DEBIT).reduce((acc, t) => acc + t.amount, 0),
+      credit: filteredTransactions.filter(t => t.type === TransactionType.CREDIT).reduce((acc, t) => acc + t.amount, 0)
+    };
+  }, [filteredTransactions]);
+
+  const absoluteMax = useMemo(() => {
+    const allTxs = [...summary.debits, ...summary.credits];
+    return allTxs.length > 0 ? Math.max(...allTxs.map(t => t.amount)) : 10000;
+  }, [summary]);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[100] flex items-center justify-center p-4 md:p-8 bg-slate-900/60 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ scale: 0.95, y: 20 }}
+        animate={{ scale: 1, y: 0 }}
+        exit={{ scale: 0.95, y: 20 }}
+        className="bg-white rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden shadow-2xl flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="p-6 border-b border-slate-100 flex items-center justify-between">
+          <div>
+            <h2 className="text-2xl font-bold text-slate-900">{summary.vendor}</h2>
+            <p className="text-xs text-slate-500 font-bold uppercase tracking-widest mt-1">Detailed Breakdown</p>
+          </div>
+          <button 
+            onClick={onClose}
+            className="p-2 hover:bg-slate-100 rounded-full text-slate-400 hover:text-slate-900 transition-colors"
+          >
+            <X className="w-6 h-6" />
+          </button>
+        </div>
+
+        <div className="p-4 bg-slate-50 border-b border-slate-200">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <label className="text-[10px] font-black uppercase text-slate-400 tracking-tighter">Filter by Amount (₹{minAmount} - ₹{maxAmount})</label>
+              <div className="flex gap-4">
+                <input 
+                  type="range" 
+                  min="0" 
+                  max={absoluteMax} 
+                  value={maxAmount} 
+                  onChange={(e) => setMaxAmount(Number(e.target.value))}
+                  className="w-full h-1.5 bg-blue-100 rounded-lg appearance-none cursor-pointer accent-blue-600"
+                />
               </div>
             </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+            <div className="flex gap-2">
+              <div className="flex-1">
+                <label className="text-[10px] font-black uppercase text-slate-400 tracking-tighter">From</label>
+                <input 
+                  type="date" 
+                  value={modalStartDate}
+                  onChange={(e) => setModalStartDate(e.target.value)}
+                  className="w-full text-xs p-1.5 rounded-lg border border-slate-200 bg-white"
+                />
+              </div>
+              <div className="flex-1">
+                <label className="text-[10px] font-black uppercase text-slate-400 tracking-tighter">To</label>
+                <input 
+                  type="date" 
+                  value={modalEndDate}
+                  onChange={(e) => setModalEndDate(e.target.value)}
+                  className="w-full text-xs p-1.5 rounded-lg border border-slate-200 bg-white"
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="p-6 bg-slate-50/50 border-b border-slate-100 grid grid-cols-2 gap-4">
+          <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
+            <div className="flex items-center gap-2 mb-1">
+              <div className="w-2 h-2 rounded-full bg-slate-400" />
+              <span className="text-[10px] text-slate-400 uppercase font-bold tracking-widest">Filtered Debit</span>
+            </div>
+            <span className="text-2xl font-black text-slate-900">₹{filteredStats.debit.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+          </div>
+          <div className="p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
+            <div className="flex items-center gap-2 mb-1">
+              <div className="w-2 h-2 rounded-full bg-emerald-500" />
+              <span className="text-[10px] text-emerald-600 uppercase font-bold tracking-widest">Filtered Credit</span>
+            </div>
+            <span className="text-2xl font-black text-emerald-600">₹{filteredStats.credit.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-6 space-y-4">
+          {filteredTransactions.length === 0 ? (
+            <div className="py-20 text-center text-slate-400 italic">No transactions match these filters.</div>
+          ) : (
+            filteredTransactions.map((tx, i) => (
+              <div key={tx.id || i} className="group p-4 bg-white border border-slate-100 rounded-xl hover:border-blue-200 transition-all">
+                <div className="flex justify-between items-start">
+                  <div className="flex flex-col flex-1 pr-6">
+                    <div className="flex items-center gap-2 mb-3">
+                      <span className={`px-2 py-0.5 rounded-full text-[8px] font-black uppercase tracking-tighter ${
+                        tx.type === TransactionType.CREDIT ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'
+                      }`}>
+                        {tx.type}
+                      </span>
+                      <div className="h-px w-4 bg-slate-100" />
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{tx.date}</span>
+                    </div>
+                    
+                    <div className="grid grid-cols-[80px_1fr] gap-x-4 gap-y-2 text-xs">
+                      <span className="text-[9px] font-bold text-slate-400 uppercase self-center">Vendor</span>
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-blue-600 px-2 py-0.5 bg-blue-50 rounded border border-blue-100">{tx.vendor}</span>
+                      </div>
+
+                      <span className="text-[9px] font-bold text-slate-400 uppercase pt-1">Description</span>
+                      <span className="text-slate-800 font-medium leading-tight pt-0.5">{tx.description}</span>
+
+                      <span className="text-[9px] font-bold text-slate-400 uppercase pt-1">Notes</span>
+                      <div className="pt-0.5 space-y-2">
+                        {editingNotesId === tx.id ? (
+                          <div className="flex gap-2">
+                            <input 
+                              type="text"
+                              value={noteValue}
+                              onChange={(e) => setNoteValue(e.target.value)}
+                              className="flex-1 text-[11px] px-2 py-1 border border-blue-200 rounded-md bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                              placeholder="Add a note..."
+                              autoFocus
+                            />
+                            <button 
+                              onClick={() => {
+                                onUpdateNotes(tx.id, noteValue);
+                                setEditingNotesId(null);
+                              }}
+                              className="px-2 py-1 bg-blue-600 text-white text-[10px] font-bold rounded hover:bg-blue-700"
+                            >
+                              Save
+                            </button>
+                            <button 
+                              onClick={() => setEditingNotesId(null)}
+                              className="px-2 py-1 bg-slate-100 text-slate-600 text-[10px] font-bold rounded hover:bg-slate-200"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        ) : (
+                          <div 
+                            onClick={() => {
+                              setEditingNotesId(tx.id);
+                              setNoteValue(tx.notes || '');
+                            }}
+                            className="group/note cursor-pointer min-h-[1.5rem] flex items-center gap-2"
+                          >
+                            <span className={`text-[11px] ${tx.notes ? 'text-slate-600 italic' : 'text-slate-300'}`}>
+                              {tx.notes || 'Add personal note...'}
+                            </span>
+                            <Edit className="w-3 h-3 text-blue-500 opacity-0 group-hover/note:opacity-100 transition-opacity" />
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="text-right flex flex-col items-end">
+                    <span className={`text-lg font-black block leading-none ${tx.type === TransactionType.CREDIT ? 'text-emerald-600' : 'text-slate-900'}`}>
+                      {tx.type === TransactionType.CREDIT ? '+' : ''}₹{tx.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    </span>
+                    
+                    {editingTxId !== tx.id ? (
+                      <button 
+                        onClick={() => setEditingTxId(tx.id)}
+                        className="text-[9px] font-bold text-blue-500 uppercase tracking-widest mt-2 hover:bg-blue-50 px-2 py-1 rounded transition-colors"
+                      >
+                        Change Category
+                      </button>
+                    ) : (
+                      <div className="flex flex-col items-end gap-2 mt-2">
+                         <select 
+                            className="text-[10px] p-2 border border-blue-200 rounded-lg bg-blue-50 focus:outline-none focus:ring-2 focus:ring-blue-500/20 w-40"
+                            value={tx.vendor}
+                            onChange={(e) => {
+                              onUpdateVendor(tx.id, e.target.value);
+                              setEditingTxId(null);
+                            }}
+                          >
+                            {vendorList.map(v => (
+                              <option key={v} value={v}>{v}</option>
+                            ))}
+                          </select>
+                          <button 
+                            onClick={() => setEditingTxId(null)}
+                            className="text-[9px] font-bold text-red-400 uppercase tracking-widest mr-2"
+                          >
+                            Cancel
+                          </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </motion.div>
     </motion.div>
   );
 }

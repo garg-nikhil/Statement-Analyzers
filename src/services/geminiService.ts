@@ -6,7 +6,7 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { ExtractionResult, TransactionType } from "../types";
 
-const VENDORS = ['H&M', 'Zara', 'Amazon', 'Flipkart', 'Myntra', 'Ajio'];
+const VENDORS = ['H&M', 'Zara', 'Amazon', 'Flipkart', 'Myntra', 'Ajio', 'Nykaa', 'Meesho', 'Tata CLiQ', 'Reliance Trends', 'Max Fashion', 'Pantaloons'];
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
@@ -23,7 +23,7 @@ const responseSchema = {
           description: { type: Type.STRING },
           amount: { type: Type.NUMBER },
           type: { type: Type.STRING, enum: Object.values(TransactionType) },
-          vendor: { type: Type.STRING, description: "The vendor name from the list: H&M, Zara, Amazon, Flipkart, Myntra, Ajio" }
+          vendor: { type: Type.STRING, description: "The vendor name (Best match from: Amazon, H&M, Zara, Flipkart, Myntra, Ajio, Nykaa, Meesho, etc. or just 'Other Marketplace')" }
         },
         required: ["date", "description", "amount", "type", "vendor"]
       }
@@ -35,17 +35,20 @@ const responseSchema = {
 export async function extractTransactions(base64Image: string, mimeType: string): Promise<ExtractionResult> {
   const prompt = `
     You are an expert financial auditor. 
-    Analyze this credit card statement image and extract ALL transactions related to the following vendors:
+    Analyze this credit card statement image and extract ALL transactions related to marketplace and fashion vendors.
+    
+    Target Vendors include but are not limited to:
     ${VENDORS.join(', ')}.
 
     Important Instructions:
-    1. Only include transactions that clearly match these vendors (they might have variations like 'AMZN' for Amazon, 'HNMIN' for H&M, etc.).
-    2. Segregate the amount into Debit (Spending/Purchase) or Credit (Refund/Payment/Cashback).
-    3. Look for indicators in the statement: 
+    1. Identify transactions that match these vendors or any other similar marketplace/fashion retailers.
+    2. If a vendor is clearly a marketplace but not in the list, label it accurately or use 'Other Marketplace'.
+    3. Segregate the amount into Debit (Spending/Purchase) or Credit (Refund/Payment/Cashback).
+    4. Look for indicators in the statement: 
        - Debit: Often marked with 'D', 'Dr', 'dr', or 'Debit'.
        - Credit: Often marked with 'C', 'Cr', 'cr', or 'Credit'.
-    4. Return 'DEBIT' if it's a purchase and 'CREDIT' if it's a refund or credit.
-    5. Ensure the amounts are positive numbers.
+    5. Return 'DEBIT' if it's a purchase and 'CREDIT' if it's a refund or credit.
+    6. Ensure the amounts are positive numbers.
   `;
 
   console.log("Starting Gemini extraction with model: gemini-3-flash-preview");

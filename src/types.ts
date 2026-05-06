@@ -15,6 +15,7 @@ export interface Transaction {
   amount: number;
   type: TransactionType;
   vendor: string;
+  notes?: string;
 }
 
 export interface VendorSummary {
