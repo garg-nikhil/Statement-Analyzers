@@ -8,7 +8,18 @@ import { ExtractionResult, TransactionType } from "../types";
 
 const VENDORS = ['H&M', 'Zara', 'Amazon', 'Flipkart', 'Myntra', 'Ajio', 'Nykaa', 'Meesho', 'Tata CLiQ', 'Reliance Trends', 'Max Fashion', 'Pantaloons'];
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+let aiClient: GoogleGenAI | null = null;
+
+function getAIClient() {
+  if (!aiClient) {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey || apiKey === "MY_GEMINI_API_KEY") {
+      throw new Error("Gemini API key is not configured. To fix this, click on 'Settings' (gear icon) in the bottom-left of AI Studio, go to 'Secrets', and add 'GEMINI_API_KEY' with your API key.");
+    }
+    aiClient = new GoogleGenAI({ apiKey });
+  }
+  return aiClient;
+}
 
 const responseSchema = {
   type: Type.OBJECT,
@@ -23,7 +34,8 @@ const responseSchema = {
           description: { type: Type.STRING },
           amount: { type: Type.NUMBER },
           type: { type: Type.STRING, enum: Object.values(TransactionType) },
-          vendor: { type: Type.STRING, description: "The vendor name (Best match from: Amazon, H&M, Zara, Flipkart, Myntra, Ajio, Nykaa, Meesho, etc. or just 'Other Marketplace')" }
+          vendor: { type: Type.STRING, description: "The vendor name (Best match from: Amazon, H&M, Zara, Flipkart, Myntra, Ajio, Nykaa, Meesho, etc. or just 'Other Marketplace')" },
+          isRecurring: { type: Type.BOOLEAN, description: "Whether this transaction seems recurring (subsidies, monthly bills, etc.)" }
         },
         required: ["date", "description", "amount", "type", "vendor"]
       }
@@ -33,8 +45,9 @@ const responseSchema = {
 };
 
 export async function extractTransactions(base64Image: string, mimeType: string): Promise<ExtractionResult> {
+  const ai = getAIClient();
   const prompt = `
-    You are an expert financial auditor. 
+    You are an expert financial auditor specializing in marketplace and fashion spending analysis.
     Analyze this credit card statement image and extract ALL transactions related to marketplace and fashion vendors.
     
     Target Vendors include but are not limited to:
@@ -44,14 +57,12 @@ export async function extractTransactions(base64Image: string, mimeType: string)
     1. Identify transactions that match these vendors or any other similar marketplace/fashion retailers.
     2. If a vendor is clearly a marketplace but not in the list, label it accurately or use 'Other Marketplace'.
     3. Segregate the amount into Debit (Spending/Purchase) or Credit (Refund/Payment/Cashback).
-    4. Look for indicators in the statement: 
-       - Debit: Often marked with 'D', 'Dr', 'dr', or 'Debit'.
-       - Credit: Often marked with 'C', 'Cr', 'cr', or 'Credit'.
-    5. Return 'DEBIT' if it's a purchase and 'CREDIT' if it's a refund or credit.
-    6. Ensure the amounts are positive numbers.
+    4. Return 'DEBIT' if it's a purchase and 'CREDIT' if it's a refund or credit.
+    5. Ensure the amounts are positive numbers.
+    6. Identify if the transaction looks recurring (e.g., monthly subscriptions, fixed bills).
   `;
 
-  console.log("Starting Gemini extraction with model: gemini-3-flash-preview");
+  console.log("Starting Gemini extraction with model: gemini-flash-latest");
 
   try {
     const textPart = { text: prompt };
@@ -63,7 +74,7 @@ export async function extractTransactions(base64Image: string, mimeType: string)
     };
 
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-flash-latest",
       contents: { parts: [textPart, imagePart] },
       config: {
         responseMimeType: "application/json",

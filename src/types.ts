@@ -16,6 +16,7 @@ export interface Transaction {
   type: TransactionType;
   vendor: string;
   notes?: string;
+  isRecurring?: boolean;
 }
 
 export interface VendorSummary {

@@ -16,6 +16,7 @@ import {
   ChevronRight,
   RefreshCw,
   X,
+  Search,
   Save,
   History,
   Trash2,
@@ -41,6 +42,8 @@ export default function App() {
   const [files, setFiles] = useState<File[]>([]);
   const [previews, setPreviews] = useState<string[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isHistoryLoading, setIsHistoryLoading] = useState(true);
   const [status, setStatus] = useState<'idle' | 'reading' | 'analyzing' | 'finalizing'>('idle');
   const [results, setResults] = useState<ExtractionResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -49,33 +52,56 @@ export default function App() {
   const [selectedVendorSummary, setSelectedVendorSummary] = useState<VendorSummary | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
+  const [isLandingView, setIsLandingView] = useState(true);
+  const [isTransitioning, setIsTransitioning] = useState(false);
+
+  // Sync isLandingView with results
+  useEffect(() => {
+    if (results) setIsLandingView(false);
+  }, [results]);
+
   const [categories, setCategories] = useState<string[]>(() => {
-    const saved = localStorage.getItem('spendwise_categories');
-    return saved ? JSON.parse(saved) : ['Fashion', 'Marketplace', 'Other'];
+    try {
+      const saved = localStorage.getItem('spendwise_categories');
+      const parsed = saved ? JSON.parse(saved) : ['Fashion', 'Marketplace', 'Other'];
+      return Array.isArray(parsed) ? parsed : ['Fashion', 'Marketplace', 'Other'];
+    } catch (e) {
+      return ['Fashion', 'Marketplace', 'Other'];
+    }
   });
 
   const [categoryMapping, setCategoryMapping] = useState<Record<string, string>>(() => {
-    const saved = localStorage.getItem('spendwise_category_mapping');
-    return saved ? JSON.parse(saved) : {
-      'H&M': 'Fashion',
-      'Zara': 'Fashion',
-      'Myntra': 'Fashion',
-      'Ajio': 'Fashion',
-      'Nykaa': 'Fashion',
-      'Reliance Trends': 'Fashion',
-      'Max Fashion': 'Fashion',
-      'Pantaloons': 'Fashion',
-      'Meesho': 'Fashion',
-      'Amazon': 'Marketplace',
-      'Flipkart': 'Marketplace',
-      'Tata CLiQ': 'Marketplace',
-      'Other Marketplace': 'Other'
-    };
+    try {
+      const saved = localStorage.getItem('spendwise_category_mapping');
+      const parsed = saved ? JSON.parse(saved) : {
+        'H&M': 'Fashion',
+        'Zara': 'Fashion',
+        'Myntra': 'Fashion',
+        'Ajio': 'Fashion',
+        'Nykaa': 'Fashion',
+        'Reliance Trends': 'Fashion',
+        'Max Fashion': 'Fashion',
+        'Pantaloons': 'Fashion',
+        'Meesho': 'Fashion',
+        'Amazon': 'Marketplace',
+        'Flipkart': 'Marketplace',
+        'Tata CLiQ': 'Marketplace',
+        'Other Marketplace': 'Other'
+      };
+      return typeof parsed === 'object' && parsed !== null ? parsed : {};
+    } catch (e) {
+      return {};
+    }
   });
 
   const [budgets, setBudgets] = useState<Record<string, number>>(() => {
-    const saved = localStorage.getItem('spendwise_budgets');
-    return saved ? JSON.parse(saved) : { 'Fashion': 3000, 'Marketplace': 5000, 'Other': 1000 };
+    try {
+      const saved = localStorage.getItem('spendwise_budgets');
+      const parsed = saved ? JSON.parse(saved) : { 'Fashion': 3000, 'Marketplace': 5000, 'Other': 1000 };
+      return typeof parsed === 'object' && parsed !== null ? parsed : { 'Fashion': 3000, 'Marketplace': 5000, 'Other': 1000 };
+    } catch (e) {
+      return { 'Fashion': 3000, 'Marketplace': 5000, 'Other': 1000 };
+    }
   });
   const abortControllerRef = useRef<boolean>(false);
   
@@ -86,6 +112,7 @@ export default function App() {
   // Filtering state
   const [startDate, setStartDate] = useState<string>('');
   const [endDate, setEndDate] = useState<string>('');
+  const [searchQuery, setSearchQuery] = useState('');
 
   // Load history on mount
   useEffect(() => {
@@ -97,6 +124,9 @@ export default function App() {
         console.error("Failed to load history", e);
       }
     }
+    // Artificial delay for smoother UX
+    const timer = setTimeout(() => setIsHistoryLoading(false), 600);
+    return () => clearTimeout(timer);
   }, []);
 
   // Save history when it changes
@@ -192,6 +222,17 @@ export default function App() {
     });
   };
 
+  const generateId = () => {
+    try {
+      if (typeof window !== 'undefined' && window.crypto && window.crypto.randomUUID) {
+        return window.crypto.randomUUID();
+      }
+      return Math.random().toString(36).substring(2, 11);
+    } catch (e) {
+      return Math.random().toString(36).substring(2, 11);
+    }
+  };
+
   const processStatement = async () => {
     if (files.length === 0) return;
 
@@ -223,9 +264,9 @@ export default function App() {
         if (abortControllerRef.current) return;
         
         // Ensure each transaction has a unique ID for editing
-        const txsWithIds = result.transactions.map((tx: any) => ({
+        const txsWithIds = (result.transactions || []).map((tx: any) => ({
           ...tx,
-          id: tx.id || crypto.randomUUID()
+          id: tx.id || generateId()
         }));
         
         aggregatedTransactions.push(...txsWithIds);
@@ -267,9 +308,22 @@ export default function App() {
         vendorSummaries: vendorSummaries as any
       });
       
-    } catch (err) {
+    } catch (err: any) {
       console.error("Processing error:", err);
-      setError('Failed to process one or more statements. Some images might be too complex.');
+      let errorMessage = 'Failed to process one or more statements. Some images might be too complex.';
+      
+      try {
+        const errorData = typeof err === 'string' ? JSON.parse(err) : err;
+        if (errorData?.error?.code === 403 || errorData?.status === 403 || (errorData?.message && errorData.message.includes('permission'))) {
+          errorMessage = 'Gemini API Permission Denied (403). Please ensure your API key is correctly set in the Secrets panel and has access to the Gemini API.';
+        } else if (errorData?.message) {
+          errorMessage = `Processing error: ${errorData.message}`;
+        }
+      } catch (e) {
+        if (err instanceof Error) errorMessage = `Processing error: ${err.message}`;
+      }
+      
+      setError(errorMessage);
     } finally {
       setIsProcessing(false);
       setStatus('idle');
@@ -289,8 +343,12 @@ export default function App() {
     setReportLabel('');
   };
 
-  const saveCurrentReport = () => {
+  const saveCurrentReport = async () => {
     if (!results || !reportLabel.trim()) return;
+
+    setIsSaving(true);
+    // Artificial delay to show progress
+    await new Promise(resolve => setTimeout(resolve, 800));
 
     const newReport: SavedReport = {
       id: crypto.randomUUID(),
@@ -302,6 +360,7 @@ export default function App() {
     updateHistory([newReport, ...savedReports]);
     setActiveReportId(newReport.id);
     setReportLabel('');
+    setIsSaving(false);
   };
 
   const loadReport = (report: SavedReport) => {
@@ -310,11 +369,17 @@ export default function App() {
       abortControllerRef.current = true;
       setIsProcessing(false);
     }
-    setResults(report.result);
-    setActiveReportId(report.id);
-    setFiles([]);
-    setPreviews([]);
-    setError(null);
+    
+    setIsTransitioning(true);
+    // Brief delay for smooth animation transition
+    setTimeout(() => {
+      setResults(report.result);
+      setActiveReportId(report.id);
+      setFiles([]);
+      setPreviews([]);
+      setError(null);
+      setIsTransitioning(false);
+    }, 500);
   };
 
   const deleteReport = (id: string, e: React.MouseEvent) => {
@@ -403,10 +468,10 @@ export default function App() {
     return new Date(dateStr);
   };
 
-  const filteredResults = (() => {
+  const filteredResults = useMemo(() => {
     if (!results) return null;
 
-    let filteredTxs = [...results.transactions];
+    let filteredTxs = results.transactions.map(tx => ({ ...tx }));
 
     if (startDate) {
       const start = new Date(startDate);
@@ -416,6 +481,41 @@ export default function App() {
       const end = new Date(endDate);
       filteredTxs = filteredTxs.filter(tx => parseDate(tx.date) <= end);
     }
+
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      filteredTxs = filteredTxs.filter(tx => 
+        tx.vendor.toLowerCase().includes(q) || 
+        tx.description.toLowerCase().includes(q)
+      );
+    }
+
+    // Detect recurring transactions
+    // 1. Group by vendor and similar amount
+    const groups: Record<string, typeof filteredTxs> = {};
+    filteredTxs.forEach(tx => {
+      if (tx.type !== TransactionType.DEBIT) return;
+      // Use vendor and amount rounded to nearest 50 for broad detection of similar monthly bills
+      const key = `${tx.vendor}-${Math.round(tx.amount / 50) * 50}`; 
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(tx);
+    });
+
+    Object.values(groups).forEach(group => {
+      if (group.length >= 2) {
+        group.forEach(tx => {
+          tx.isRecurring = true;
+        });
+      }
+    });
+
+    // 2. Keyword based detection
+    const subKeywords = ['subscription', 'premium', 'membership', 'monthly', 'netflix', 'spotify', 'youtube', 'prime', 'recharge', 'bill', 'insurance', 'rent'];
+    filteredTxs.forEach(tx => {
+      if (subKeywords.some(kw => tx.description.toLowerCase().includes(kw) || tx.vendor.toLowerCase().includes(kw))) {
+        tx.isRecurring = true;
+      }
+    });
 
     // Re-calculate summaries for the filtered subset
     const summariesMap: Record<string, any> = {};
@@ -430,14 +530,23 @@ export default function App() {
     });
 
     filteredTxs.forEach((tx) => {
-      const v = VENDORS.find(vendor => tx.vendor.toLowerCase().includes(vendor.toLowerCase())) || 'Other Marketplace';
-      if (summariesMap[v]) {
+      let v = VENDORS.find(vendor => tx.vendor.toLowerCase().includes(vendor.toLowerCase()));
+      
+      // Better categorization: check description if vendor is generic
+      if ((!v || v === 'Other Marketplace') && tx.description) {
+        const descMatch = VENDORS.find(vendor => tx.description.toLowerCase().includes(vendor.toLowerCase()));
+        if (descMatch) v = descMatch;
+      }
+
+      const finalVendor = v || 'Other Marketplace';
+      
+      if (summariesMap[finalVendor]) {
         if (tx.type === TransactionType.DEBIT) {
-          summariesMap[v].debits.push(tx);
-          summariesMap[v].totalDebit += tx.amount;
+          summariesMap[finalVendor].debits.push(tx);
+          summariesMap[finalVendor].totalDebit += tx.amount;
         } else {
-          summariesMap[v].credits.push(tx);
-          summariesMap[v].totalCredit += tx.amount;
+          summariesMap[finalVendor].credits.push(tx);
+          summariesMap[finalVendor].totalCredit += tx.amount;
         }
       }
     });
@@ -446,23 +555,59 @@ export default function App() {
 
     // Calculate category summaries for budget tracking
     const categoryStats: Record<string, number> = {};
+    const categoryRefundStats: Record<string, number> = {};
+    
     Object.values(summariesMap).forEach((s: any) => {
       const cat = categoryMapping[s.vendor] || 'Other';
       categoryStats[cat] = (categoryStats[cat] || 0) + s.totalDebit;
+      categoryRefundStats[cat] = (categoryRefundStats[cat] || 0) + s.totalCredit;
+    });
+
+    // Net spending for budget tracking
+    const categoryNetStats: Record<string, number> = {};
+    Object.keys(categoryStats).forEach(cat => {
+      categoryNetStats[cat] = categoryStats[cat] - (categoryRefundStats[cat] || 0);
+    });
+
+    // Summarize recurring transactions
+    const recurringTxs = filteredTxs.filter(tx => tx.isRecurring && tx.type === TransactionType.DEBIT);
+    const recurringTotal = recurringTxs.reduce((acc, tx) => acc + tx.amount, 0);
+    
+    // Group recurring by vendor to show in summary
+    const recurringByVendor: Record<string, { total: number, count: number, avgAmount: number }> = {};
+    recurringTxs.forEach(tx => {
+      if (!recurringByVendor[tx.vendor]) {
+        recurringByVendor[tx.vendor] = { total: 0, count: 0, avgAmount: 0 };
+      }
+      recurringByVendor[tx.vendor].total += tx.amount;
+      recurringByVendor[tx.vendor].count += 1;
+    });
+    Object.values(recurringByVendor).forEach(stat => {
+      stat.avgAmount = stat.total / stat.count;
     });
 
     return {
       transactions: filteredTxs,
       vendorSummaries: vendorSummaries as any,
-      categoryStats
+      categoryStats: categoryNetStats,
+      categoryDebitStats: categoryStats,
+      categoryRefundStats: categoryRefundStats,
+      recurringSummary: {
+        total: recurringTotal,
+        count: recurringTxs.length,
+        items: Object.entries(recurringByVendor).map(([vendor, stats]) => ({
+          vendor,
+          ...stats
+        })).sort((a, b) => b.total - a.total)
+      }
     };
-  })();
+  }, [results, startDate, endDate, searchQuery, categoryMapping]);
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans selection:bg-blue-100 flex flex-col">
       {/* Header */}
       <header className="h-16 bg-slate-900 flex items-center justify-between px-8 text-white flex-shrink-0 sticky top-0 z-50">
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 cursor-pointer" onClick={() => setIsLandingView(true)}>
           <div className="w-8 h-8 bg-blue-500 rounded flex items-center justify-center font-bold text-sm">
             SW
           </div>
@@ -538,9 +683,16 @@ export default function App() {
                     <div className="flex justify-between items-center text-[9px] uppercase font-bold tracking-tighter">
                       <span className="text-slate-400">{cat}</span>
                       <div className="flex items-center gap-2">
-                        <span className={spent > budget ? 'text-red-500' : 'text-slate-600'}>
-                          ₹{spent.toFixed(0)} / ₹{budget}
-                        </span>
+                        <div className="flex flex-col items-end leading-none">
+                          <span className={spent > budget ? 'text-red-500 font-black' : 'text-slate-600 font-bold'}>
+                            ₹{spent.toFixed(0)} / ₹{budget}
+                          </span>
+                          {(filteredResults as any)?.categoryRefundStats?.[cat] > 0 && (
+                            <span className="text-[7px] text-emerald-500 font-black italic mt-0.5">
+                              (-₹{(filteredResults as any).categoryRefundStats[cat].toFixed(0)} refund)
+                            </span>
+                          )}
+                        </div>
                         <button 
                           onClick={() => {
                             const val = prompt(`New budget for ${cat}:`, String(budget));
@@ -577,7 +729,11 @@ export default function App() {
               </h2>
             </div>
             <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
-              {savedReports.length === 0 ? (
+              {isHistoryLoading ? (
+                Array.from({ length: 3 }).map((_, i) => (
+                  <div key={i} className="h-12 w-full bg-slate-50 rounded animate-pulse border border-slate-100" />
+                ))
+              ) : savedReports.length === 0 ? (
                 <p className="text-[10px] text-slate-400 italic">No saved reports yet.</p>
               ) : (
                 savedReports.map(report => (
@@ -616,7 +772,128 @@ export default function App() {
 
         {/* Content Area */}
         <div className="flex-1 p-8 overflow-y-auto">
-          {!results ? (
+          {isTransitioning ? (
+            <div className="max-w-5xl mx-auto space-y-8 animate-in fade-in duration-500">
+               <div className="flex justify-between items-end mb-8">
+                 <div className="space-y-2">
+                    <div className="h-8 w-64 bg-slate-100 animate-pulse rounded" />
+                    <div className="h-4 w-48 bg-slate-50 animate-pulse rounded" />
+                 </div>
+                 <div className="h-10 w-32 bg-slate-100 animate-pulse rounded-lg" />
+               </div>
+               <div className="grid grid-cols-3 gap-6">
+                 <div className="h-64 bg-slate-50 animate-pulse rounded-2xl border border-slate-100" />
+                 <div className="h-64 bg-slate-50 animate-pulse rounded-2xl border border-slate-100" />
+                 <div className="h-64 bg-slate-50 animate-pulse rounded-2xl border border-slate-100" />
+               </div>
+               <div className="h-96 bg-white animate-pulse rounded-2xl border border-slate-100" />
+            </div>
+          ) : isLandingView && !results ? (
+            <motion.div 
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="max-w-5xl mx-auto space-y-16 py-12"
+            >
+              {/* Hero Section */}
+              <section className="text-center space-y-6">
+                <motion.div 
+                  initial={{ scale: 0.9 }}
+                  animate={{ scale: 1 }}
+                  className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-50 text-blue-600 text-[10px] font-bold uppercase tracking-widest border border-blue-100"
+                >
+                  <TrendingUp className="w-3 h-3" />
+                  AI-Powered Financial Intelligence
+                </motion.div>
+                <h2 className="text-5xl md:text-6xl font-black tracking-tight text-slate-900 leading-[1.1]">
+                  Master Your Spending <br/>
+                  <span className="text-blue-600">With AI Precision</span>
+                </h2>
+                <p className="text-lg text-slate-500 max-w-2xl mx-auto leading-relaxed">
+                  Turn your transaction screenshots into interactive insights. Track budgets, 
+                  analyze vendor patterns, and stay ahead of your expenses in seconds.
+                </p>
+                <div className="flex flex-col sm:flex-row items-center justify-center gap-4 pt-4">
+                  <button 
+                    onClick={() => setIsLandingView(false)}
+                    className="px-8 py-4 bg-slate-900 text-white font-bold rounded-xl hover:bg-slate-800 transition-all shadow-lg hover:shadow-xl flex items-center gap-2 group"
+                  >
+                    Launch Analyzer 
+                    <ChevronRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                  </button>
+                  <button 
+                    onClick={() => setIsSettingsOpen(true)}
+                    className="px-8 py-4 bg-white text-slate-700 font-bold rounded-xl border border-slate-200 hover:bg-slate-50 transition-all flex items-center gap-2"
+                  >
+                    Configure Budgets
+                  </button>
+                </div>
+              </section>
+
+              {/* Steps Section */}
+              <section className="grid md:grid-cols-3 gap-8">
+                <div className="bg-white p-8 rounded-2xl border border-slate-100 shadow-sm space-y-4">
+                  <div className="w-12 h-12 bg-blue-50 rounded-xl flex items-center justify-center text-blue-600">
+                    <Upload className="w-6 h-6" />
+                  </div>
+                  <h3 className="text-lg font-bold text-slate-900">1. Upload</h3>
+                  <p className="text-sm text-slate-500">Drop screenshots of your UPI or Bank statements. We handle multiple files at once.</p>
+                </div>
+                <div className="bg-white p-8 rounded-2xl border border-slate-100 shadow-sm space-y-4">
+                  <div className="w-12 h-12 bg-purple-50 rounded-xl flex items-center justify-center text-purple-600">
+                    <RefreshCw className="w-6 h-6" />
+                  </div>
+                  <h3 className="text-lg font-bold text-slate-900">2. AI Analysis</h3>
+                  <p className="text-sm text-slate-500">Gemini AI extracts vendors, amounts, and dates with 99% accuracy across formats.</p>
+                </div>
+                <div className="bg-white p-8 rounded-2xl border border-slate-100 shadow-sm space-y-4">
+                  <div className="w-12 h-12 bg-emerald-50 rounded-xl flex items-center justify-center text-emerald-600">
+                    <TrendingDown className="w-6 h-6" />
+                  </div>
+                  <h3 className="text-lg font-bold text-slate-900">3. Optimize</h3>
+                  <p className="text-sm text-slate-500">Set monthly targets and watch your spending health in real-time visualizations.</p>
+                </div>
+              </section>
+
+              {/* Stats Teaser */}
+              <section className="bg-slate-900 rounded-[2rem] p-12 text-white overflow-hidden relative">
+                <div className="absolute top-0 right-0 w-64 h-64 bg-blue-500/20 blur-[100px] -translate-y-1/2 translate-x-1/2" />
+                <div className="relative z-10 grid md:grid-cols-2 gap-12 items-center">
+                  <div className="space-y-6">
+                    <h3 className="text-3xl font-bold">Privacy-First Insights</h3>
+                    <p className="text-slate-400 leading-relaxed">
+                      All processing happens securely. We don't store your original statements, 
+                      only the extracted metadata used for your personal dashboard.
+                    </p>
+                    <div className="flex gap-8">
+                      <div>
+                        <div className="text-3xl font-black text-blue-400">0</div>
+                        <div className="text-[10px] uppercase font-bold tracking-widest text-slate-500">Manual Entry</div>
+                      </div>
+                      <div>
+                        <div className="text-3xl font-black text-blue-400">100%</div>
+                        <div className="text-[10px] uppercase font-bold tracking-widest text-slate-500">Secure</div>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="bg-white/5 rounded-2xl p-6 border border-white/10 backdrop-blur-md">
+                   <div className="flex items-center gap-4 mb-6">
+                     <div className="w-10 h-10 bg-blue-500 rounded-lg flex items-center justify-center">
+                       <BarChart3 className="w-5 h-5 text-white" />
+                     </div>
+                     <span className="font-bold">Live Breakdown Demo</span>
+                   </div>
+                   <div className="space-y-4 opacity-50">
+                     {[1, 2, 3].map(i => (
+                       <div key={i} className="h-2 bg-white/10 rounded-full w-full overflow-hidden">
+                         <div className="h-full bg-blue-500 w-[60%]" />
+                       </div>
+                     ))}
+                   </div>
+                  </div>
+                </div>
+              </section>
+            </motion.div>
+          ) : !results ? (
             <div className="max-w-3xl mx-auto space-y-8">
               <div className="text-center lg:text-left flex flex-col md:flex-row md:items-end md:justify-between gap-4">
                 <div>
@@ -687,8 +964,38 @@ export default function App() {
                           )}
                         </div>
                         {previews[i] && (
-                          <div className="aspect-video rounded-lg overflow-hidden bg-slate-50 border border-slate-100">
-                            <img src={previews[i]} alt="Preview" className="w-full h-full object-contain" />
+                          <div className="aspect-video rounded-lg overflow-hidden bg-slate-50 border border-slate-100 relative group/preview">
+                            <img 
+                              src={previews[i]} 
+                              alt="Preview" 
+                              className={`w-full h-full object-contain transition-all duration-500 ${
+                                isProcessing && processingIndex === i ? 'scale-105 blur-[2px] opacity-40' : 
+                                isProcessing && i < processingIndex ? 'grayscale opacity-30 scale-95' : ''
+                              }`} 
+                            />
+                            {isProcessing && processingIndex === i && (
+                              <div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
+                                <motion.div
+                                  animate={{ rotate: 360 }}
+                                  transition={{ repeat: Infinity, duration: 2, ease: "linear" }}
+                                  className="w-10 h-10 bg-white rounded-full shadow-xl flex items-center justify-center border-2 border-blue-500/20"
+                                >
+                                  <RefreshCw className="w-5 h-5 text-blue-500 animate-spin" />
+                                </motion.div>
+                                <span className="text-[9px] font-black uppercase text-blue-600 bg-white/80 px-2 py-0.5 rounded-full shadow-sm backdrop-blur-sm">
+                                  {status}...
+                                </span>
+                              </div>
+                            )}
+                            {isProcessing && i < processingIndex && (
+                              <div className="absolute inset-0 flex items-center justify-center">
+                                <div className="w-8 h-8 bg-emerald-500 rounded-full shadow-lg flex items-center justify-center text-white">
+                                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7" />
+                                  </svg>
+                                </div>
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
@@ -758,6 +1065,19 @@ export default function App() {
                   <div className="flex flex-wrap items-center gap-3">
                     <div className="flex items-center gap-2">
                       <div className="flex flex-col">
+                        <label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest ml-1">Search</label>
+                        <div className="relative">
+                          <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-400" />
+                          <input 
+                            type="text"
+                            placeholder="Vendor or description..."
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            className="text-[10px] pl-7 pr-2 py-1.5 border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 w-48"
+                          />
+                        </div>
+                      </div>
+                      <div className="flex flex-col">
                         <label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest ml-1">From</label>
                         <input 
                           type="date"
@@ -775,9 +1095,9 @@ export default function App() {
                           className="text-[10px] px-2 py-1.5 border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                         />
                       </div>
-                      {(startDate || endDate) && (
+                      {(startDate || endDate || searchQuery) && (
                         <button 
-                          onClick={() => { setStartDate(''); setEndDate(''); }}
+                          onClick={() => { setStartDate(''); setEndDate(''); setSearchQuery(''); }}
                           className="mt-4 p-1.5 hover:bg-slate-100 rounded-lg text-slate-400"
                         >
                           <X className="w-4 h-4" />
@@ -798,10 +1118,18 @@ export default function App() {
                     />
                     <button 
                       onClick={saveCurrentReport}
-                      disabled={!reportLabel.trim() || !results}
-                      className="px-4 py-2 bg-blue-600 text-white rounded-lg text-xs font-bold uppercase tracking-wider hover:bg-blue-700 disabled:bg-slate-200 flex items-center gap-2 transition-colors"
+                      disabled={!reportLabel.trim() || !results || isSaving}
+                      className="px-4 py-2 bg-blue-600 text-white rounded-lg text-xs font-bold uppercase tracking-wider hover:bg-blue-700 disabled:bg-slate-200 flex items-center gap-2 transition-all min-w-[125px] justify-center"
                     >
-                      <Save className="w-3 h-3" /> Save Result
+                      {isSaving ? (
+                        <>
+                          <RefreshCw className="w-3 h-3 animate-spin" /> Saving...
+                        </>
+                      ) : (
+                        <>
+                          <Save className="w-3 h-3" /> Save Result
+                        </>
+                      )}
                     </button>
                   </div>
                   <button onClick={reset} className="px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold uppercase tracking-wider hover:bg-slate-100 transition-colors flex items-center gap-2 whitespace-nowrap">
@@ -831,7 +1159,8 @@ export default function App() {
                       <BarChart 
                         data={filteredResults.vendorSummaries.map(s => ({
                           name: s.vendor,
-                          amount: s.totalDebit
+                          amount: s.totalDebit,
+                          totalCredit: s.totalCredit
                         })).sort((a, b) => b.amount - a.amount)}
                         margin={{ top: 10, right: 30, left: 20, bottom: 20 }}
                       >
@@ -852,18 +1181,18 @@ export default function App() {
                         <Tooltip 
                           cursor={{ fill: '#f8fafc' }}
                           content={({ active, payload }) => {
-                            if (active && payload && payload.length) {
+                            if (active && payload && payload.length && payload[0]?.payload) {
                               const vendor = payload[0].payload.name;
-                              const category = categoryMapping[vendor] || 'Other';
-                              const budget = budgets[category] || 0;
-                              const spent = filteredResults?.categoryStats[category] || 0;
+                              const category = (categoryMapping && vendor) ? (categoryMapping[vendor] || 'Other') : 'Other';
+                              const budget = (budgets && category) ? (budgets[category] || 0) : 0;
+                              const spent = filteredResults?.categoryStats ? (filteredResults.categoryStats[category] || 0) : 0;
                               const isOver = budget > 0 && spent > budget;
                               
                               return (
                                 <div className="bg-slate-900 text-white p-4 text-xs rounded-xl shadow-2xl border border-slate-800 min-w-[160px]">
                                   <div className="flex justify-between items-start mb-3">
                                     <div>
-                                      <p className="font-bold text-sm">{vendor}</p>
+                                      <p className="font-bold text-sm">{vendor || 'Unknown'}</p>
                                       <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">{category}</p>
                                     </div>
                                     {isOver && (
@@ -875,16 +1204,22 @@ export default function App() {
                                   
                                   <div className="space-y-2">
                                     <div className="flex justify-between">
-                                      <span className="text-slate-400">Vendor Spent:</span>
-                                      <span className="font-bold">₹{payload[0].value.toLocaleString()}</span>
+                                      <span className="text-slate-400">Vendor Debit:</span>
+                                      <span className="font-bold text-red-400">₹{(payload[0].value as number)?.toLocaleString() || 0}</span>
                                     </div>
+                                    {payload[0].payload.totalCredit > 0 && (
+                                      <div className="flex justify-between">
+                                        <span className="text-slate-400">Vendor Refund:</span>
+                                        <span className="font-bold text-emerald-400">₹{payload[0].payload.totalCredit.toLocaleString()}</span>
+                                      </div>
+                                    )}
                                     <div className="pt-2 border-t border-slate-800">
                                       <div className="flex justify-between mb-1">
                                         <span className="text-slate-400">Category Budget:</span>
                                         <span className="font-bold">₹{budget.toLocaleString()}</span>
                                       </div>
                                       <div className="flex justify-between">
-                                        <span className="text-slate-400">Total Spent:</span>
+                                        <span className="text-slate-400">Net Cat Spent:</span>
                                         <span className={`font-bold ${isOver ? 'text-red-400' : 'text-emerald-400'}`}>
                                           ₹{spent.toLocaleString()}
                                         </span>
@@ -935,6 +1270,88 @@ export default function App() {
                         </Bar>
                       </BarChart>
                     </ResponsiveContainer>
+                  </div>
+                </motion.div>
+              )}
+
+              {filteredResults && filteredResults.recurringSummary.items.length > 0 && (
+                <motion.div
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="grid lg:grid-cols-3 gap-6"
+                >
+                  <div className="lg:col-span-1 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-6">
+                    <div className="flex items-center gap-3">
+                      <div className="bg-blue-50 p-2 rounded-lg">
+                        <RefreshCw className="w-5 h-5 text-blue-600" />
+                      </div>
+                      <div>
+                        <h3 className="text-lg font-bold text-slate-800">Fixed Commitments</h3>
+                        <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Recurring monthly bills</p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-1">
+                      <p className="text-2xl font-black text-slate-900 leading-none">
+                        ₹{filteredResults.recurringSummary.total.toLocaleString()}
+                      </p>
+                      <p className="text-[10px] text-slate-400 uppercase font-black tracking-widest">
+                        Total across {filteredResults.recurringSummary.count} transactions
+                      </p>
+                    </div>
+
+                    <div className="pt-4 border-t border-slate-50 space-y-3">
+                      {filteredResults.recurringSummary.items.slice(0, 3).map((item, idx) => (
+                        <div key={idx} className="flex justify-between items-center group">
+                          <div>
+                            <p className="text-[11px] font-bold text-slate-700">{item.vendor}</p>
+                            <p className="text-[9px] text-slate-400 uppercase font-bold tracking-tighter italic">Avg: ₹{item.avgAmount.toFixed(0)}</p>
+                          </div>
+                          <div className="text-right">
+                            <p className="text-[11px] font-black text-blue-600">₹{item.total.toLocaleString()}</p>
+                            <p className="text-[9px] text-slate-300 font-bold">x{item.count}</p>
+                          </div>
+                        </div>
+                      ))}
+                      {filteredResults.recurringSummary.items.length > 3 && (
+                        <button className="text-[9px] font-bold text-blue-500 uppercase tracking-widest hover:underline pt-2">
+                          + {filteredResults.recurringSummary.items.length - 3} more recurring vendors
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="lg:col-span-2 bg-slate-900 text-white p-6 rounded-2xl border border-slate-800 shadow-xl overflow-hidden relative">
+                    <div className="absolute top-0 right-0 w-64 h-64 bg-blue-500/10 blur-[80px] -translate-y-1/2 translate-x-1/2" />
+                    <div className="relative z-10 flex flex-col h-full">
+                      <div className="flex justify-between items-start mb-6">
+                        <div>
+                          <h4 className="text-sm font-bold text-slate-300 uppercase tracking-widest mb-1 italic">Subscription Insights</h4>
+                          <p className="text-lg font-black leading-tight">Identify and manage <br/> fixed overheads.</p>
+                        </div>
+                        <div className="w-10 h-10 bg-white/5 rounded-xl flex items-center justify-center border border-white/10">
+                          <AlertCircle className="w-5 h-5 text-blue-400" />
+                        </div>
+                      </div>
+                      
+                      <div className="mt-auto space-y-4">
+                        <p className="text-xs text-slate-400 leading-relaxed max-w-xs">
+                          Fixed monthly expenses account for <span className="text-blue-400 font-bold">
+                            {((filteredResults.recurringSummary.total / (filteredResults?.vendorSummaries.reduce((acc: number, s: any) => acc + s.totalDebit, 0) || 1)) * 100).toFixed(0)}%
+                          </span> of your total spending in this report.
+                        </p>
+                        <div className="flex gap-4">
+                          <button 
+                            onClick={() => {
+                              setSearchQuery('subscription');
+                            }}
+                            className="px-4 py-2 bg-blue-600 rounded-lg text-[10px] font-black uppercase tracking-widest hover:bg-blue-700 transition-colors"
+                          >
+                            Analyze Fixed Costs
+                          </button>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 </motion.div>
               )}
@@ -1018,6 +1435,39 @@ export default function App() {
           )}
         </div>
       </main>
+
+      {/* Global Status Bar */}
+      <AnimatePresence>
+        {isProcessing && (
+          <motion.div 
+            initial={{ y: 100, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: 100, opacity: 0 }}
+            className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[100] bg-slate-900 text-white px-6 py-3 rounded-full shadow-2xl flex items-center gap-4 border border-white/10 backdrop-blur-xl"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-full border-2 border-blue-500/20 border-t-blue-500 animate-spin" />
+              <div className="flex flex-col">
+                <span className="text-xs font-bold whitespace-nowrap">
+                   {status === 'reading' && 'Extracting Data...'}
+                   {status === 'analyzing' && 'Analyzing with AI...'}
+                   {status === 'finalizing' && 'Synthesizing Results...'}
+                </span>
+                <span className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">
+                  File {processingIndex + 1} of {files.length}
+                </span>
+              </div>
+            </div>
+            <div className="h-4 w-px bg-white/10" />
+            <button 
+              onClick={reset}
+              className="text-[10px] font-black uppercase text-red-400 hover:text-red-300 transition-colors"
+            >
+              Stop
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -1044,9 +1494,17 @@ const VendorCard: React.FC<VendorCardProps> = ({
       <div className="p-5">
         <div className="flex justify-between items-center mb-4">
           <h3 className="font-bold text-lg text-slate-800">{summary.vendor}</h3>
-          <span className="text-[10px] bg-slate-100 px-2 py-1 rounded font-bold uppercase tracking-wider text-slate-600">
-            {summary.debits.length + summary.credits.length} Activity
-          </span>
+          <div className="flex flex-col items-end gap-1">
+            <span className="text-[10px] bg-slate-100 px-2 py-1 rounded font-bold uppercase tracking-wider text-slate-600">
+              {summary.debits.length + summary.credits.length} Activity
+            </span>
+            {([...summary.debits, ...summary.credits].filter(t => t.isRecurring).length > 0) && (
+              <span className="text-[8px] text-blue-600 font-bold uppercase tracking-widest flex items-center gap-1">
+                <RefreshCw className="w-2 h-2" />
+                { [...summary.debits, ...summary.credits].filter(t => t.isRecurring).length } Recurring
+              </span>
+            )}
+          </div>
         </div>
 
         <div className="grid grid-cols-2 gap-4 mb-4">
@@ -1229,8 +1687,9 @@ function VendorDetailsModal({
   const [modalEndDate, setModalEndDate] = useState('');
   const [minAmount, setMinAmount] = useState<number>(0);
   const [maxAmount, setMaxAmount] = useState<number>(() => {
-    const allTxs = [...summary.debits, ...summary.credits];
-    return allTxs.length > 0 ? Math.max(...allTxs.map(t => t.amount)) : 10000;
+    const allTxs = [...(summary.debits || []), ...(summary.credits || [])];
+    const amounts = allTxs.map(t => Number(t.amount)).filter(a => !isNaN(a));
+    return amounts.length > 0 ? Math.max(...amounts) : 10000;
   });
 
   const parseModalDate = (dateStr: string) => {
@@ -1370,6 +1829,12 @@ function VendorDetailsModal({
                       }`}>
                         {tx.type}
                       </span>
+                      {tx.isRecurring && (
+                        <span className="px-2 py-0.5 rounded-full text-[8px] font-black uppercase tracking-tighter bg-blue-100 text-blue-700 flex items-center gap-1">
+                          <RefreshCw className="w-2 h-2" />
+                          Recurring
+                        </span>
+                      )}
                       <div className="h-px w-4 bg-slate-100" />
                       <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{tx.date}</span>
                     </div>
